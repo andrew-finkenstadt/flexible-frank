@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gridogram Creator</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800&display=swap" rel="stylesheet">
+    <script src="script.js" defer></script>
+</head>
+
+<body class="dark-mode">
+    <div class="container">
+        <header>
+            <h1>Gridogram Creator</h1>
+            <p class="subtitle">Enter a quote to generate a unique grid puzzle.</p>
+        </header>
+
+        <main>
+            <section class="controls glass">
+                <div class="input-group">
+                    <label for="quote-input">Quote</label>
+                    <textarea id="quote-input" placeholder="Type your quote here..." rows="3"></textarea>
+                </div>
+
+                <div class="action-buttons">
+                    <button id="generate-btn" class="primary-btn">Generate Grid</button>
+                    <button id="run-tests-btn" class="secondary-btn">Run Self-Tests</button>
+                </div>
+
+                <div id="stats" class="stats-panel hidden">
+                    <span id="solution-count">Possible Grids: --</span>
+                    <span id="difficulty-badge" class="badge">Difficulty: --</span>
+                </div>
+            </section>
+
+            <section id="grid-display" class="grid-section glass">
+                <div id="grid-container" class="grid-wrapper">
+                    <!-- Grid will be generated here -->
+                    <div class="placeholder-text">Enter a quote and click Generate</div>
+                </div>
+                <div id="quote-trace" class="trace-display"></div>
+            </section>
+        </main>
+
+        <aside id="test-dashboard" class="glass hidden">
+            <header>
+                <h2>Self-Tests</h2>
+                <button id="close-tests-btn">×</button>
+            </header>
+            <div id="test-results" class="test-list"></div>
+        </aside>
+
+        <footer>
+            <p>&copy; 2026 Gridogram Creator | 100% Client-Side</p>
+        </footer>
+    </div>
+</body>
+
+</html>
