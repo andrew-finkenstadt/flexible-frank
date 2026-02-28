@@ -156,7 +156,7 @@ button {
     margin-top: 1rem;
     font-size: 0.9rem;
     color: var(--text-muted);
-    min-width: 320px;
+    min-width: 350px;
     white-space: nowrap;
 }
 
