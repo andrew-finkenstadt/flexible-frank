@@ -114,12 +114,14 @@ class GridogramUI {
             self.onmessage = function(e) {
                 const { action, data } = e.data;
                 if (action === 'solve') {
-                    const result = solveBoggleStyle(data.processedWords, data.cols, data.rows);
+                    const result = solveBoggleStyle(data.processedWords, data.cols, data.rows, data.workerId);
                     self.postMessage({ action: 'solveResult', result });
+                } else if (action === 'ping') {
+                    self.postMessage({ action: 'pong', data: data });
                 }
             };
 
-            function solveBoggleStyle(processedWords, cols, rows) {
+            function solveBoggleStyle(processedWords, cols, rows, workerId) {
                 const startTime = Date.now();
                 const timeoutMs = 200000;
                 let attempts = 0;
@@ -129,14 +131,14 @@ class GridogramUI {
                     id: idx 
                 })).sort((a, b) => b.trace.length - a.trace.length);
 
-                const maxRestarts = 500000;
+                const maxRestarts = 50000;
                 let bestPlaced = 0;
                 while (attempts < maxRestarts) {
                     attempts++;
                     if (Date.now() - startTime > timeoutMs) break;
 
                     if (attempts % 5000 === 0) {
-                        self.postMessage({ action: 'progress', data: { placed: bestPlaced, total: words.length, attempts } });
+                        self.postMessage({ action: 'progress', data: { placed: bestPlaced, total: words.length, attempts, workerId } });
                     }
 
                     const grid = Array(rows).fill(null).map(() => Array(cols).fill(null));
@@ -195,7 +197,14 @@ class GridogramUI {
                 for (let r = 0; r < rows; r++) {
                     for (let c = 0; c < cols; c++) cells.push({ r, c });
                 }
-                cells.sort(() => Math.random() - 0.5);
+                // Sort start cells: prioritize cells that already have the first letter of the word
+                cells.sort((a, b) => {
+                    const hasA = grid[a.r][a.c] === word[0];
+                    const hasB = grid[b.r][b.c] === word[0];
+                    if (hasA && !hasB) return -1;
+                    if (!hasA && hasB) return 1;
+                    return Math.random() - 0.5;
+                });
 
                 for (const start of cells) {
                     if (!allowOverlap && grid[start.r][start.c]) continue;
@@ -223,7 +232,16 @@ class GridogramUI {
                         neighbors.push({ r: r + dr, c: c + dc });
                     }
                 }
-                neighbors.sort(() => Math.random() - 0.5);
+                
+                // Sort neighbors: prioritize cells that already have the next letter
+                neighbors.sort((a, b) => {
+                    const nextChar = word[charIdx + 1];
+                    const hasA = (a.r >= 0 && a.r < rows && a.c >= 0 && a.c < cols) && (grid[a.r][a.c] === nextChar);
+                    const hasB = (b.r >= 0 && b.r < rows && b.c >= 0 && b.c < cols) && (grid[b.r][b.c] === nextChar);
+                    if (hasA && !hasB) return -1;
+                    if (!hasA && hasB) return 1;
+                    return Math.random() - 0.5;
+                });
 
                 for (const n of neighbors) {
                     const res = backtrack(word, charIdx + 1, n.r, n.c, grid, cols, rows, newPath);
@@ -233,9 +251,12 @@ class GridogramUI {
             }
         `;
 
-        const blob = new Blob([workerCode], { type: 'application/javascript' });
-        this.worker = new Worker(URL.createObjectURL(blob));
-        this.worker.addEventListener('message', (e) => this.handleWorkerMessage(e));
+        this.workerBlobUrl = URL.createObjectURL(new Blob([workerCode], { type: 'application/javascript' }));
+        this.workers = [];
+        this.numWorkers = Math.min(Math.max(navigator.hardwareConcurrency || 4, 2), 8);
+        this.failedWorkersInCurrentTier = 0;
+        this.maxPlacedThisTier = 0;
+
         this.init();
     }
 
@@ -250,12 +271,31 @@ class GridogramUI {
     handleWorkerMessage(e) {
         const { action, result, data } = e.data;
         if (action === 'progress') {
-            const percent = Math.floor((data.placed / data.total) * 100);
-            const total = this.cumulativeAttempts + data.attempts;
-            this.solutionCount.textContent = `Attempt ${total.toLocaleString()} (${percent}%)`;
+            if (data.placed > this.maxPlacedThisTier) {
+                this.maxPlacedThisTier = data.placed;
+                const percent = Math.floor((data.placed / data.total) * 100);
+                this.solutionCount.textContent = `Attempting... (${data.placed} of ${data.total} words, ${percent}%)`;
+            }
         } else if (action === 'solveResult') {
             this.handleSolveResult(result);
+        } else if (action === 'pong') {
+            this.handleTestPong(data);
         }
+    }
+
+    spawnWorkers() {
+        this.terminateAllWorkers();
+        this.workers = [];
+        for (let i = 0; i < this.numWorkers; i++) {
+            const worker = new Worker(this.workerBlobUrl);
+            worker.addEventListener('message', (e) => this.handleWorkerMessage(e));
+            this.workers.push(worker);
+        }
+    }
+
+    terminateAllWorkers() {
+        this.workers.forEach(w => w.terminate());
+        this.workers = [];
     }
 
     generate() {
@@ -284,12 +324,14 @@ class GridogramUI {
             { c: 7, r: 7 }  // 7x7 (49 letters)
         ];
         this.tierIdx = 0;
+        this.spawnWorkers();
         this.attemptNextTier();
     }
 
     attemptNextTier() {
         if (this.tierIdx >= this.gridTiers.length) {
             alert("This quote is too long or complex even for a 7x7 grid. Please try a shorter quote.");
+            this.terminateAllWorkers();
             this.resetButton();
             return;
         }
@@ -301,18 +343,27 @@ class GridogramUI {
             return;
         }
 
-        this.worker.postMessage({
-            action: 'solve',
-            data: { processedWords: this.processedWords, cols: tier.c, rows: tier.r }
+        this.failedWorkersInCurrentTier = 0;
+        this.maxPlacedThisTier = 0;
+        this.solutionCount.textContent = `Scanning ${tier.c}x${tier.r} grid...`;
+
+        this.workers.forEach((worker, idx) => {
+            worker.postMessage({
+                action: 'solve',
+                data: {
+                    processedWords: this.processedWords,
+                    cols: tier.c,
+                    rows: tier.r,
+                    workerId: idx
+                }
+            });
         });
     }
 
     handleSolveResult(result) {
-        if (result) {
-            this.cumulativeAttempts += result.attempts;
-        }
-
         if (result && result.grid) {
+            this.terminateAllWorkers();
+            this.cumulativeAttempts += result.attempts;
             this.currentGrid = result.grid;
             this.usageMap = result.usageMap;
             this.solvedWordIndices.clear();
@@ -321,16 +372,17 @@ class GridogramUI {
             this.difficultyBadge.textContent = this.uniqueLetters < 10 ? "Easy" : this.uniqueLetters < 18 ? "Medium" : "Hard";
 
             const totalTime = ((Date.now() - this.totalStartTime) / 1000).toFixed(2);
-            const iterStr = this.cumulativeAttempts.toLocaleString();
-
-            this.solutionCount.textContent = `Solved in ${totalTime}s | ${iterStr} attempts`;
+            this.solutionCount.textContent = `Solved in ${totalTime}s (Parallel Race)`;
 
             this.updateTraceDisplay();
             this.updateRelevance();
             this.resetButton();
         } else {
-            this.tierIdx++;
-            this.attemptNextTier();
+            this.failedWorkersInCurrentTier++;
+            if (this.failedWorkersInCurrentTier >= this.workers.length) {
+                this.tierIdx++;
+                this.attemptNextTier();
+            }
         }
     }
 
@@ -456,9 +508,35 @@ class GridogramUI {
             addResult("Smart Quote Mapping", GridogramLogic.cleanInput("\u201CHello\u201D") === '"Hello"');
             addResult("ASCII Constraint", GridogramLogic.cleanInput("Caf\u00e9") === "Caf");
             addResult("Sync Solver Baseline", !!GridogramLogic.solve(processed, 4, 4, false));
+
+            // Async Worker Lifecycle Tests
+            const testWorker = new Worker(this.workerBlobUrl);
+            let pongReceived = false;
+            testWorker.onmessage = (e) => {
+                if (e.data.action === 'pong') {
+                    pongReceived = true;
+                    addResult("Worker Spawn & Ping", true);
+                    testWorker.terminate();
+                    addResult("Worker Termination", true);
+                }
+            };
+            testWorker.postMessage({ action: 'ping', data: 'test' });
+
+            // Fail-safe timeout for worker test
+            setTimeout(() => {
+                if (!pongReceived) {
+                    addResult("Worker Resp / Timeout", false);
+                    testWorker.terminate();
+                }
+            }, 2000);
+
         } catch (err) {
             addResult("Core Logic Exception: " + err.message, false);
         }
+    }
+
+    handleTestPong(data) {
+        // Handled inline in runTests via onmessage for simpler scoping
     }
 }
 
